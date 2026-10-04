@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wechat-local-skill"
+version = "0.1.0"
+description = "Local, script-first Windows WeChat database access and native-interface research"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "licenses/*.txt", "THIRD_PARTY_NOTICES.md"]
+dependencies = [
+  "cryptography==46.0.3",
+  "psutil==7.1.0",
+  "pywin32==311; sys_platform == 'win32'",
+  "zstandard==0.25.0",
+]
+
+[project.optional-dependencies]
+research = ["pefile==2024.8.26", "capstone==5.0.6"]
+observe = ["pefile==2024.8.26", "frida==17.22.1"]
+
+[project.scripts]
+wechat-local = "wechat_local.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

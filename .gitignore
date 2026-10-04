@@ -1,0 +1,16 @@
+.venv/
+.state/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+skill/runtime.json
+*.dll
+*.exe
+*.db
+*.db-wal
+*.db-shm
+*.dpapi
+*keys*.json
+private-*/
