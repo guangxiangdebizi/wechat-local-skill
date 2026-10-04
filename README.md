@@ -64,6 +64,8 @@ This copies `skill/SKILL.md` and its launcher into `CODEX_HOME/skills/wechat-loc
 interpreter and optional account binding. No other skill or Codex setting is
 modified. The skill can be read explicitly in the current session; refresh the
 session's skill inventory if automatic discovery has not updated.
+The local runtime also records the source directory, repository and Git revision
+so future Codex sessions can locate the implementation and unfinished work.
 
 ## Data handling
 

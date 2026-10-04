@@ -9,6 +9,10 @@ Use `scripts/wechat.py` with the interpreter recorded in `runtime.json`.
 The launcher invokes a local Python package, not GUI automation or a remote
 service. Read `runtime.json` only to obtain the interpreter and account binding;
 do not show its machine-specific paths or account identifiers unnecessarily.
+For continued development or repair, use `runtime.source_root` to find the
+source and read `docs/research-log.md` there. `runtime.repository` and
+`runtime.git_commit` record the public source and installed revision. Ordinary
+read requests do not need to load the full research log.
 
 ```powershell
 & <runtime.python> <skill-dir>/scripts/wechat.py capabilities
