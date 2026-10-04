@@ -1,4 +1,4 @@
-include README.md THIRD_PARTY_NOTICES.md LICENSE
+include README.md THIRD_PARTY_NOTICES.md LICENSE AGENTS.md
 recursive-include licenses *.txt
 recursive-include scripts *.py
 recursive-include skill *.md *.py

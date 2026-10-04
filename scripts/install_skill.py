@@ -10,11 +10,11 @@ import sys
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--account")
-    parser.add_argument("--db-dir")
-    parser.add_argument("--codex-home", type=Path)
-    parser.add_argument("--update", action="store_true")
+    parser = argparse.ArgumentParser(description="安装或更新本项目的 Codex skill，不修改其他技能和配置")
+    parser.add_argument("--account", help="明确绑定的微信账号目录名")
+    parser.add_argument("--db-dir", help="包含账号目录的微信数据根目录")
+    parser.add_argument("--codex-home", type=Path, help="指定 Codex 用户目录")
+    parser.add_argument("--update", action="store_true", help="显式更新已存在的本项目 skill")
     args = parser.parse_args()
     if importlib.util.find_spec("wechat_local") is None:
         raise SystemExit("Install the local package into this interpreter before installing the skill")

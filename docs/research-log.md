@@ -1,141 +1,66 @@
-# Evidence log
+# 研究与验证记录
 
-## 2026-10-04: initial read-only implementation
+本文件默认使用简体中文。原有英文记录归档于 [research-log.en.md](research-log.en.md)，用于保留既有证据；后续更新追加在本文件中。翻译不改变历史观察、失败或未完成状态。
 
-### Sources and boundaries
+## 2026-10-04：首个只读实现
 
-- Database reader: `fanyuantaier/wechatauto-replica`, revision
-  `91dc0e1a601013b759b261061d8f7642f736af90`, Apache-2.0.
-  Only the database module is vendored. Logger import is the sole source edit;
-  separate code handles explicit account selection and private DPAPI key storage.
-- Native-send reference inspected: `aixed/WeChat-Hook`, revision
-  `e905d07ade50d2c6472e4eb3bd4f3fe19cf662c6`, documented target 4.1.10.27.
-  No hook DLL, restart, injection or stale-offset call was attempted.
-- Official wxauto installation documentation lists the free version's upper
-  client limit as 4.1.8.107. The current client is newer. The open skill wrapper
-  does not make its wxautox4 activation dependency free or open source.
+### 来源与边界
 
-### Observations
+- 读取引擎：`fanyuantaier/wechatauto-replica`，固定提交 `91dc0e1a601013b759b261061d8f7642f736af90`，Apache-2.0。只包含数据库模块，logger 导入是唯一的 vendored 源码修改；账号绑定和 DPAPI 缓存由独立代码实现。
+- 原生发送参考：`aixed/WeChat-Hook`，固定提交 `e905d07ade50d2c6472e4eb3bd4f3fe19cf662c6`，文档目标为微信 4.1.10.27。在该阶段未使用 hook DLL、重启、注入或旧版函数调用。
+- wxauto 官方安装说明当时给出的免费版客户端上限为 4.1.8.107，低于当前客户端。开源 skill 外壳不代表其 wxautox4 激活依赖免费或开源。
 
-- Active client: WeChat/Weixin 4.1.15.13, Windows x64, Python 3.12.4 x64.
-- Local `Weixin.dll`: size 201,552,944 bytes; SHA-256
-  `10f8e995453e2da46d4f2b5080cd6da1f13cc5147746adc119ceae38cb039de5`.
-- Explicit account binding passed the page-one key HMAC checks. Contact,
-  session and SNS snapshots passed `PRAGMA quick_check`. Text-history and
-  Moments fields were read successfully from the live local snapshots.
-- A first Moments parser handled XML syntactically but looked for fields at
-  the wrong depth: live rows use `SnsDataItem/TimelineObject`. Empty output
-  was not accepted as success. The parser was corrected, covered by a
-  nested-container/CDATA/deleted-comment fixture, and rechecked on live rows.
-- All initial offline tests pass. No messages, posts, likes or comments were
-  created. No private content or account identifiers are included in this log.
-- The observed localhost listeners did not respond to a standard read-only
-  `/json/version` request. This is not evidence that all IPC routes are absent.
-- Static strings include `newsendmsg`, `mmsnspost`, `mmsnscomment`, and matching
-  protobuf schema names. These are protocol/research anchors, not externally
-  callable authenticated endpoints.
-- The reference's `create_param2` (RVA `0xdf40`), `send_message` (`0x1677a30`)
-  and text constructor (`0x6b2c30`) are not function-start RVAs in the current
-  image's unwind metadata. Their current bytes do not represent a portable
-  native-send profile. Do not execute these old offsets.
+### 实测观察
 
-### Remaining work, not completed results
+- 客户端：微信 4.1.15.13，Windows x64，Python 3.12.4 x64。
+- 本地 `Weixin.dll` 文件大小 201,552,944 字节，SHA-256 为 `10f8e995453e2da46d4f2b5080cd6da1f13cc5147746adc119ceae38cb039de5`。
+- 明确绑定账号后，数据库第一页密钥 HMAC 校验通过。联系人、会话和朋友圈快照的 `PRAGMA quick_check` 通过；真实本地快照中的聊天文本与朋友圈字段可读。
+- 首次朋友圈解析仅在 XML 根层找字段，实际结构是 `SnsDataItem/TimelineObject`。空字段没有被接受为成功；修正后增加嵌套结构、CDATA 和已删除评论测试，并重新检查真实数据。
+- 初始离线测试通过，没有发送消息、发朋友圈、点赞或评论。公开记录没有私人内容和账号标识。
+- 当时本地监听端口不响应明文 HTTP 的 `/json/version` 请求。该现象不能证明不存在所有 IPC 或本地服务。
+- 静态字符串包含 `newsendmsg`、`mmsnspost`、`mmsnscomment` 及相应 protobuf 名称，它们只是研究锚点，不是可从外部直接调用的已鉴权接口。
+- 旧参考中的 `create_param2`（RVA `0xdf40`）、`send_message`（`0x1677a30`）和文本构造函数（`0x6b2c30`）不对应当前 unwind 元数据中的函数入口，不能直接执行这些旧偏移。
 
-1. Resolve current native message construction/dispatch and the required
-   account/service context, calling convention, thread affinity and ownership.
-2. Capture one narrowly authorized normal-send trace, validate all argument
-   layouts and prove the path on File Transfer Assistant before other recipients.
-3. Require an exact version/hash profile, per-operation idempotency and local
-   outgoing-record confirmation. Never claim remote delivery from a return code.
-4. Independently resolve and test Moments publishing, likes and comments;
-   message sending does not establish any of those capabilities.
-5. Keep private runtime traces/state separate from source. Publish only verified
-   support claims; until those gates pass this project remains read-only.
+### 未完成事项
 
-### Replay
+1. 解析当前消息构造/派发、账号服务上下文、调用约定、线程要求和内存所有权。
+2. 在获准的窄范围正常发送跟踪中验证参数，先用文件传输助手证明端到端路径。
+3. 固定版本和哈希，保证每操作幂等性，检查本地新增出站记录，不能仅根据返回码声称服务器已投递。
+4. 单独验证朋友圈发布、点赞和评论；消息发送成功不能证明这些能力。
+5. 私人运行状态与源代码分开。只发布有证据支持的能力，未完成前保持只读标注。
 
-See README commands for isolated installation, tests, `status`, account-bound
-`doctor` and static probing. For live read checks, use the locally selected
-account and retain only aggregate verification status in shareable reports.
-Keep the original databases untouched. A valid cached key round trip or unit
-test alone does not validate native writing or full-client compatibility.
+安装、测试和静态探测的复现命令见 README。原始数据库保持不变；缓存密钥往返或单元测试通过，不等于原生写入已验证。
 
-## 2026-10-04: Frida inventory failure; live attachment disabled
+## 2026-10-04：Frida 枚举失败，禁用在线附加
 
-- The user requested withholding GitHub publication until chat/Moments reads
-  **and writes** are completed. No GitHub repository was created or pushed.
-- Read-only source was installed as a local, explicitly partial skill. Its
-  launcher and validation work; it does not implement or attempt live writes.
-- A single Frida 17.22.1 attachment to the confirmed Weixin main process loaded
-  a script that only enumerated its own module metadata. The script reported
-  x64, `Weixin.dll`, loaded-image size 202,039,296 and **zero interceptors**.
-  No `NativeFunction`, message send, API replay, argument dump or hook was run.
-- After script unload/session detach, that main process and its child processes
-  disappeared. A subsequent observation command stopped immediately with
-  `NoSuchProcess`; it never attached or installed the prepared interceptors.
-- Windows Application events 1000 and 1001 confirm an APPCRASH of the same
-  main-process PID. Faulting module: `ntdll.dll`; exception `0xc0000005`;
-  fault-module offset `0x165497`. This establishes the crash and temporal
-  relationship, not a proven root cause or an anti-instrumentation mechanism.
-- The corresponding binary hash is blocked in `observe_native.py`. No retry,
-  automatic restart, login automation, driver/security-setting change or
-  alternative live injection was performed. No test message was sent.
-- Preserve this negative evidence. Static message/Moments anchors and passing
-  read tests do **not** make native writes ready. Continue offline analysis;
-  any future live experiment needs a new explicit user decision and an
-  appropriately isolated process, rather than reusing the affected session.
+- 当时用户要求聊天和朋友圈的读写都完成后再发布，因此尚未创建或推送 GitHub 仓库。
+- 本地安装的是明确标为部分实现的只读 skill，其启动器和检查可用，没有实际写入。
+- 一次 Frida 17.22.1 附加只枚举模块元数据，报告 x64、`Weixin.dll`、映像大小 202,039,296、**零拦截器**。未执行 `NativeFunction`、发送、API 重放、参数转储或 hook。
+- 脚本卸载和会话分离之后，主进程及子进程消失。后续观察命令在 `NoSuchProcess` 处停止，没有再附加或安装准备好的拦截器。
+- Windows Application 事件 1000、1001 确认同一主进程发生 APPCRASH：故障模块 `ntdll.dll`，异常 `0xc0000005`，偏移 `0x165497`。这证明崩溃及时间关联，不证明根因或反检测机制。
+- 对应二进制哈希已在 `observe_native.py` 阻止。没有重试、自动重启、自动登录、修改驱动/安全设置或改用其他在线注入方案，没有发送测试消息。
+- 失败证据保留。静态锚点和读取测试通过，不能让原生写入变成可用。后续先离线分析，任何新的在线实验需要新的明确用户决定及合适的隔离/恢复方案。
 
-## 2026-10-04: user-restarted client recovery check
+## 2026-10-04：用户重启后的恢复检查
 
-- The user manually reopened WeChat. Passive process discovery confirmed a
-  new main process and four child processes, still version 4.1.15.13.
-- The installed skill's `status` and account-bound `doctor` commands succeeded.
-  All nine selected database keys still passed validation; contact, session and
-  SNS snapshots passed `PRAGMA quick_check`. Cached text history was readable.
-- The SNS cache contained newly synced rows, and `freshness.client_running`
-  returned true with no recorded WAL-merge failure. This demonstrates read
-  recovery, not a validated sender or complete server-side data access.
-- No Frida attachment, interception, native function call or message send was
-  attempted against the reopened process. The known-binary live-observer block
-  remains in force. GitHub publication remains deferred as requested.
+- 用户手动重新打开微信。被动进程检查发现新的主进程与四个子进程，版本仍为 4.1.15.13。
+- 已安装 skill 的 `status` 和账号绑定的 `doctor` 通过。九个选定数据库密钥仍然有效；联系人、会话、朋友圈 `quick_check` 通过，聊天缓存可读。
+- 朋友圈出现新同步行，`freshness.client_running=true`，没有记录到 WAL 合并失败。这证明读取恢复，不证明发送器或完整服务器数据访问。
+- 未对重开的进程附加 Frida、安装拦截、调用原生发送或发送消息。已知二进制的在线附加仍被阻止，当时发布继续延期。
 
-## 2026-10-05: second round and authorized partial publication
+## 2026-10-05：第二轮检查与获准发布部分实现
 
-- The user requested one further verification round, and explicitly authorized
-  publishing the current partial source if native writes still could not be
-  completed. This supersedes the earlier publication deferral; it does not
-  make unfinished write capabilities supported.
-- Live process/version and database-integrity checks, contacts, sessions,
-  File Transfer Assistant history and nested Moments parsing passed again.
-  Recipient preview remained a dry run. `send --commit` was rejected before
-  a database/process write could occur. Full read/write verification did not
-  pass; no real outbound write or delivery test was performed.
-- The binary hash and 22 static anchored functions were rechecked. Native
-  argument layouts/service context are still unresolved. No old offset was
-  executed, and the previously crashing Frida path was not retried.
-- New observation: client-owned loopback ports 14013 and 14016 serve **HTTPS**.
-  A GET to `/json/version` gets HTTP 200 with an application error, not a CDP
-  version response. The earlier plain-HTTP failure did not establish that
-  there was no accessible local service.
-- Port 14016 parses a JSON POST body's `apiname`. A synthetic unknown name is
-  echoed with `errcode=-11028`, `errmsg="invalid apiname"`; the same value in a
-  GET query is not selected. Four metadata-only candidate names (`getVersion`,
-  `getClientVersion`, `getLoginStatus`, `getApiList`) were rejected identically.
-  Port 14013 returned error 10057. No write payload was submitted to either.
-- Exact UTF-8/UTF-16 localization of `invalid apiname` in the main image,
-  observed client DLLs and main-process readable memory produced no usable
-  registration table. This limited search does not prove that the table or
-  write interfaces do not exist; child-process dispatch/resources remain
-  plausible explanations. API names, schema and authorization remain gates.
-- The new verification helper distinguishes passing read/guard checks from
-  unresolved writes. `--require-writes` returns failure, even when all read
-  checks pass. A preview that reports a send fails its own regression test.
-- The current source will be published as an experimental read-only snapshot,
-  with these failures and replay scripts retained. No chat text, contacts,
-  account mappings, keys, databases, runtime traces or Tencent binaries are
-  part of the publication.
+- 用户要求再验证一轮，若仍不能完成原生写入，则先公开现有代码。该新决定取代之前的发布延期，但不改变未完成能力的状态。
+- 进程/版本、数据库完整性、联系人、会话、文件传输助手历史和嵌套朋友圈解析再次通过。接收人预览仍是 dry run，`send --commit` 在写入前被拒绝。完整读写没有通过，未进行真实对外写入或投递测试。
+- 当前二进制哈希及 22 个静态锚定函数重新检查。原生参数布局和服务上下文仍未解决；没有执行旧偏移或重试崩溃的 Frida 路线。
+- 新观察：微信主进程的回环端口 14013、14016 使用 **HTTPS**。GET `/json/version` 返回 HTTP 200 与业务错误，不是 CDP 版本响应；此前明文 HTTP 失败不能说明没有本地服务。
+- 14016 解析 JSON POST 的 `apiname` 字段。虚构未知名称被回显并返回 `errcode=-11028`、`errmsg="invalid apiname"`；GET 查询参数中的同名字段不会被选中。
+- 四个仅查元数据的候选名称 `getVersion`、`getClientVersion`、`getLoginStatus`、`getApiList` 被同样拒绝。14013 返回错误 10057。没有向这两个端口提交发送负载。
+- 对 `invalid apiname` 的 UTF-8/UTF-16 精确定位，在主映像、已观察到的客户端 DLL 和主进程可读内存中没有找到可用注册表。有限搜索不证明表或写入接口不存在，子进程派发与资源文件仍是可能解释；API 名称、参数和鉴权仍是未通过的条件。
+- 新验证脚本区分读取/保护检查与真实写入。`--require-writes` 即使读取全通过，也返回失败；预览如果意外报告发送，则回归测试失败。
+- 源码以实验性只读快照公开，失败证据和复现脚本保留。聊天内容、联系人、账号映射、密钥、数据库、跟踪和腾讯二进制不属于公开内容。
 
-### Second-round replay
+### 第二轮复现
 
 ```powershell
 python -X utf8 scripts/verify_round.py --account <selected-account> --require-writes
@@ -144,6 +69,24 @@ python -X utf8 scripts/probe_local_services.py --pid <confirmed-Weixin-main-PID>
 python -X utf8 scripts/probe_runtime_labels.py --pid <confirmed-Weixin-main-PID>
 ```
 
-Do not run the live observer against the blocked binary. Keep actual account
-bindings and process IDs local. Unit/build/skill checks are separate from
-native write validation, which remains unfinished.
+实际账号绑定和 PID 只留在本机。单元测试、构建和 skill 校验不能代替尚未完成的原生写入验证。
+
+## 2026-10-05：默认中文文档与控件脚本预检
+
+- 用户要求 README、仓库和包 description、安装/使用说明等公开介绍默认用中文；代码标识符、命令、原始错误与许可证保留原样。
+- 原英文研究记录保留为独立归档，本中文记录保留相同历史事实，不将失败改写为成功。
+- 用户明确允许用纯 Python 控件脚本，先向文件传输助手发送一条测试消息，后续再核对额外接收人；不使用 Computer Use、截图或坐标。
+- uiautomation 2.0.29、comtypes 1.4.17 安装在项目独立环境。未调用上游 GUI 驱动，也未设置系统读屏开关。
+- 被动控件枚举及窗口恢复之后，当前客户端只暴露 Qt 窗口和渲染空壳，没有搜索、会话、消息编辑或发送控件。
+- 只读检查显示，已固定版本/哈希的可访问性候选 RVA `0x0b135c38` 当前字节为 0。未改变该字节；临时修改需要单独明确授权并保证结束恢复。
+- 截至本段记录，尚未进行实际发送，不能把预检或控件枚举标成发送成功。
+
+### 首次获准的临时标志试验
+
+- 用户明确授权一次版本/哈希校验后的一字节临时可访问性试验，并要求结束恢复原值。不重试 Frida 路线，不修改 Windows 设置。
+- 独立控件脚本尝试通过 Value/Invoke 接口完成已确认的文件传输助手测试消息；没有截图、坐标、键盘输入或 DLL 注入。
+- 候选标志从 0 临时变为 1 后，mmui 控件可被枚举，表明该窄范围可访问性路径有效。
+- 发送预检失败于目标会话定位：没有找到可直接操作的唯一文件传输助手会话项。未准备消息正文、未调用发送、未确认新增出站记录。
+- `finally` 恢复标志为 0；独立只读检查确认原值恢复且主进程仍在。恢复之后，新的 UIA 枚举再次只显示窗口空壳。
+- 原型现在增加了会话第一行的精确匹配、搜索控件接口和歧义拒绝。新增测试覆盖同名歧义、其他区域正文不可冒充会话、新出站记录必须精确匹配等条件。
+- 17 项离线测试通过，不能据此声明控件发送已验证。需要新的有限轮次授权后，才可以再次临时改变标志并进行真实发送测试。

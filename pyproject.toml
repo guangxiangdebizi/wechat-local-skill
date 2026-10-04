@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "wechat-local-skill"
 version = "0.1.0"
-description = "Local, script-first Windows WeChat database access and native-interface research"
+description = "面向中文用户的 Windows 微信本地脚本与 Codex skill：联系人、会话、聊天记录、朋友圈缓存读取及原生接口研究"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE", "licenses/*.txt", "THIRD_PARTY_NOTICES.md"]
@@ -19,6 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 research = ["pefile==2024.8.26", "capstone==5.0.6"]
 observe = ["pefile==2024.8.26", "frida==17.22.1"]
+control = ["uiautomation==2.0.29", "comtypes==1.4.17"]
 
 [project.scripts]
 wechat-local = "wechat_local.cli:main"

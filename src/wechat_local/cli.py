@@ -40,7 +40,7 @@ def nonnegative(value):
 
 
 def parser():
-    p = argparse.ArgumentParser(description="Local WeChat data interfaces; no UI automation")
+    p = argparse.ArgumentParser(description="微信本地数据接口：默认只读，不使用 Computer Use")
     p.add_argument("--db-dir")
     p.add_argument("--account")
     subs = p.add_subparsers(dest="command", required=True)
@@ -56,7 +56,7 @@ def parser():
     h.add_argument("--limit", type=bounded, default=20)
     h.add_argument("--offset", type=nonnegative, default=0)
     m = subs.add_parser("moments")
-    m.add_argument("--author", help="Exact username, alias, nickname or remark")
+    m.add_argument("--author", help="精确的内部用户名、微信号、昵称或备注")
     m.add_argument("--limit", type=bounded, default=20)
     m.add_argument("--offset", type=nonnegative, default=0)
     s = subs.add_parser("send")
