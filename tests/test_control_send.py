@@ -49,6 +49,40 @@ FAKE_AUTO = SimpleNamespace(PatternId=SimpleNamespace(**{kind: kind for kind in 
 
 
 class ControlSendTests(unittest.TestCase):
+    def test_windows_line_endings_are_equivalent_without_ignoring_content(self):
+        self.assertTrue(module.same_text("first\r\nsecond", "first\nsecond"))
+        self.assertFalse(module.same_text("first\n\nsecond", "first\nsecond"))
+        self.assertFalse(module.same_text("value 42", "value 24"))
+
+    def test_prepared_resume_does_not_write_text_again(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value, button, audit = FakeValue("test"), FakeControl(), {}
+            db = mock.Mock()
+            db.get_messages.side_effect = [[], [self.outgoing()]]
+            with mock.patch.object(module, "freshness", return_value={"wal_merge_failed": []}), \
+                 mock.patch.object(module.time, "time", return_value=200), \
+                 mock.patch.object(module, "invoke", return_value=True) as invoke:
+                module.send_once(db, "fixture", value, button, "test", audit,
+                                 Path(directory) / "receipt.json", "fingerprint", timeout=0,
+                                 resume_prepared=True)
+            self.assertTrue(audit["local_outgoing_confirmed"])
+            self.assertEqual(value.writes, [])
+            invoke.assert_called_once()
+
+    def test_changed_prepared_draft_is_not_sent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            value, audit = FakeValue("user changed draft"), {}
+            db = mock.Mock()
+            db.get_messages.return_value = []
+            with mock.patch.object(module, "freshness", return_value={"wal_merge_failed": []}), \
+                 mock.patch.object(module, "invoke") as invoke:
+                with self.assertRaises(module.AccessError):
+                    module.send_once(db, "fixture", value, FakeControl(), "test", audit,
+                                     Path(directory) / "receipt.json", "fingerprint", timeout=0,
+                                     resume_prepared=True)
+            self.assertEqual(value.Value, "user changed draft")
+            invoke.assert_not_called()
+
     def test_first_line_matching_is_exact(self):
         wanted = FakeControl("fixture\nold preview")
         wrong = FakeControl("fixture extra\npreview")

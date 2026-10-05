@@ -14,6 +14,7 @@
 | 读取朋友圈正文、媒体元数据、已缓存的点赞和评论 | 已实现 |
 | 精确匹配接收人并生成发送预览 | 仅预览，不发送 |
 | 独立纯 Python 控件脚本发送文字 | 固定版本上已验证，需显式授权，不默认启用 |
+| 独立纯 Python 控件脚本发送 PNG/JPEG 图片 | 文件选择框路线已验证，需显式授权，不默认启用 |
 | 微信原生内部接口发送消息 | 未实现 |
 | 发布朋友圈、点赞、评论 | 未实现 |
 
@@ -143,6 +144,20 @@ py -3.12 -m venv .venv
 - 后续追加试验将搜索结果项与分组标题、最近使用副本分开，按身份锚点匹配后实际点击，确认聊天输入框后才准备正文。成功记录另行追加，未覆盖早期失败。
 - `--additional-chat <exact-identifier>` 可重复传入明确获准的额外接收人，必须从文件传输助手开始；第一个目标未确认时不处理其他目标。已确认的回执必须再次匹配原记录才能跳过，不能重复发送。
 - 旧的不确定回执可通过 `--reconcile-only --request-id <same-id> --confirm-record <sort-seq> <local-id> <create-time>` 仅回读核对，不能同时传 `--commit`。正文、记录身份、时间、发送方向和快照都匹配后才更新确认阶段，不发送或修改可访问性标志。
+- 多行文本只将 CRLF/CR 与 LF 视为相同换行，不忽略正文、数字、空格或空行。已知未发送的原草稿可显式使用 `--resume-prepared` 续发，但必须属于同一 request ID、指纹一致且完整正文匹配；不重新填写、不允许续发不确定发送。
+
+### 独立图片发送脚本
+
+`scripts/try_control_send_media.py` 默认通过 UIA 操作 Windows 文件选择框，使用原生控件 ID 区分“打开”主按钮与下拉按钮；校验所选完整文件路径，再单次点击发送并确认新增出站图片。不是微信原生协议接口。PNG 图片已实测，JPEG 为同一路径支持格式但未完成单独实测。
+
+```powershell
+& .venv/Scripts/python.exe scripts/try_control_send_media.py --pid <wechat-main-pid> --runtime <local-runtime-json> --chat <exact-recipient> --file <approved-image.png> --request-id <confirmed-operation-id> --allow-temporary-accessibility --allow-control-input --commit
+```
+
+- 可重复传 `--file`，每张图片单独保存源文件 SHA-256、阶段、基线和确认记录。已确认的图片只能在原记录回读匹配后跳过，不重复发送。
+- 默认成功路线不使用剪贴板、键盘、截图或 Computer Use。需要前台点击时仅临时关联输入线程，并在 `finally` 解除，不修改系统设置。不能保证跨版本、锁屏或断开的桌面会话。
+- `--route clipboard` 为尚未实测成功的替代路线；未知句柄型剪贴板格式会在修改前被拒绝。支持的格式临时备份只保存在进程内，结束恢复；用户期间改过剪贴板时不覆盖新内容。
+- 新增出站图片确认与已校验的本地文件选择操作关联，不等同于网络层文件摘要或接收方已读证明。选图或发送结果不确定时不能自动重试。
 
 接口返回值的意义参考 Microsoft 的 [Invoke](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationinvokepattern-invoke) 和 [SetValue](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationvaluepattern-setvalue) 文档。它们不提供微信业务层的投递确认。
 

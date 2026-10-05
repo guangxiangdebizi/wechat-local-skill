@@ -21,6 +21,13 @@ class AmbiguousControlResults(AccessError):
     pass
 
 
+def same_text(actual, expected):
+    if not isinstance(actual, str) or not isinstance(expected, str):
+        return False
+    normalize = lambda value: value.replace("\r\n", "\n").replace("\r", "\n")
+    return normalize(actual) == normalize(expected)
+
+
 def walk(control, depth=0):
     if isinstance(control, (list, tuple)):
         for root in control:
@@ -89,7 +96,41 @@ def click_control(control, audit):
     point = ((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2)
     hwnd = win32gui.WindowFromPoint(point)
     if not hwnd or win32process.GetWindowThreadProcessId(hwnd)[1] != control.ProcessId:
-        raise AccessError("Target control is occluded by another process; no click allowed")
+        handle = getattr(control, "NativeWindowHandle", 0)
+        if not handle and hasattr(control, "GetTopLevelControl"):
+            handle = control.GetTopLevelControl().NativeWindowHandle
+        if not handle:
+            raise AccessError("Target control is occluded by another process; no click allowed")
+        import win32api
+        import win32con
+        root = win32gui.GetAncestor(handle, 2)
+        if win32process.GetWindowThreadProcessId(root)[1] != control.ProcessId:
+            raise AccessError("Control root is outside the expected process")
+        current = win32api.GetCurrentThreadId()
+        foreground = win32gui.GetForegroundWindow()
+        threads = {win32process.GetWindowThreadProcessId(root)[0]}
+        if foreground:
+            threads.add(win32process.GetWindowThreadProcessId(foreground)[0])
+        attached = []
+        try:
+            for thread in threads - {current}:
+                win32process.AttachThreadInput(current, thread, True)
+                attached.append(thread)
+            win32gui.ShowWindow(root, win32con.SW_RESTORE)
+            win32gui.BringWindowToTop(root)
+            win32gui.SetForegroundWindow(root)
+        finally:
+            for thread in reversed(attached):
+                win32process.AttachThreadInput(current, thread, False)
+        time.sleep(0.2)
+        rect = control.BoundingRectangle
+        if rect.right <= rect.left or rect.bottom <= rect.top:
+            raise AccessError("Target rectangle disappeared after foreground restoration")
+        point = ((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2)
+        hwnd = win32gui.WindowFromPoint(point)
+        if not hwnd or win32process.GetWindowThreadProcessId(hwnd)[1] != control.ProcessId:
+            raise AccessError("Target remains occluded; no click allowed")
+        audit["foreground_restored_to_target"] = True
     audit["coordinates"] = True
     audit["coordinate_source"] = "uia_bounding_rectangle"
     audit["mouse"] = True
@@ -336,7 +377,8 @@ def accessibility_gate(pid, allowed, audit):
             handle.Close()
 
 
-def control_preflight(pid, who, audit, allow_control_input=False):
+def control_preflight(pid, who, audit, allow_control_input=False, prefer_search=False, replace_search=None,
+                      expected_draft=None):
     import uiautomation as auto
 
     audit["stage"] = "window_controls"
@@ -376,7 +418,7 @@ def control_preflight(pid, who, audit, allow_control_input=False):
                 audit=audit, allow_control_input=allow_control_input)
         audit["stage"] = "session_lookup"
         try:
-            selected = exact_item(root, who, "session_list")
+            selected = None if prefer_search else exact_item(root, who, "session_list")
         except AmbiguousControlResults as exc:
             audit["session_selection_ambiguous"] = True
             audit["session_candidates"] = exc.candidates
@@ -398,9 +440,11 @@ def control_preflight(pid, who, audit, allow_control_input=False):
                 audit["control_summary"] = safe_summary(root)
                 raise AccessError("Search did not expose one editable provider; no coordinate fallback")
             search_value = pattern(boxes[0], "ValuePattern")
-            if search_value.IsReadOnly or search_value.Value not in ("", who):
+            current_search = search_value.Value
+            allowed_replacement = replace_search is not None and current_search == replace_search
+            if search_value.IsReadOnly or (current_search not in ("", who) and not allowed_replacement):
                 raise AccessError("Search has existing input or is read-only; refusing to overwrite")
-            if not search_value.Value:
+            if not current_search or (allowed_replacement and current_search != who):
                 if not search_value.SetValue(who, waitTime=0.8) or search_value.Value != who:
                     raise AccessError("Search ValuePattern failed")
             else:
@@ -421,7 +465,7 @@ def control_preflight(pid, who, audit, allow_control_input=False):
     editor = find_one(root, lambda control: target_input(control, who), "Exact target chat input")
     audit["target_chat_open_confirmed"] = True
     value = pattern(editor, "ValuePattern")
-    if value.IsReadOnly or value.Value:
+    if value.IsReadOnly or (value.Value and not same_text(value.Value, expected_draft)):
         raise AccessError("Chat input is read-only or has an existing draft; refusing to overwrite")
     button = find_one(root, lambda control: control.ControlTypeName == "ButtonControl"
                       and control.Name in ("发送", "发送(S)"), "Send button")
@@ -453,7 +497,7 @@ def check_receipt(path, fingerprint):
 
 
 def send_once(db, username, value, button, text, audit, receipt, fingerprint, timeout=15.0,
-              editor=None, allow_control_input=False):
+              editor=None, allow_control_input=False, resume_prepared=False):
     before = {row_identity(row) for row in db.get_messages(username, 100)}
     if freshness(db)["wal_merge_failed"]:
         raise AccessError("Baseline snapshot is stale; no message will be prepared")
@@ -462,20 +506,26 @@ def send_once(db, username, value, button, text, audit, receipt, fingerprint, ti
             "baseline": [list(identity) for identity in before]}
     save_receipt(receipt, data)
     try:
-        if value.IsReadOnly or value.Value:
+        if value.IsReadOnly or (value.Value and not (resume_prepared and same_text(value.Value, text))):
             raise AccessError("Chat input changed after preflight; refusing to overwrite")
-        audit["text_set_attempted"] = True
-        try:
-            audit["text_set_reported_success"] = bool(value.SetValue(text, waitTime=0.2))
-        except Exception as exc:
-            audit["text_set_error_type"] = type(exc).__name__
-        if value.Value != text and allow_control_input and editor is not None and value.Value == "":
+        if resume_prepared:
+            if not same_text(value.Value, text):
+                raise AccessError("The previously prepared text no longer matches")
+            audit["resumed_prepared_text"] = True
+        else:
+            audit["text_set_attempted"] = True
+            try:
+                audit["text_set_reported_success"] = bool(value.SetValue(text, waitTime=0.2))
+            except Exception as exc:
+                audit["text_set_error_type"] = type(exc).__name__
+            wait_for(lambda: same_text(value.Value, text), timeout=3)
+        if not same_text(value.Value, text) and allow_control_input and editor is not None and value.Value == "":
             click_control(editor, audit)
             if not editor.HasKeyboardFocus:
                 raise AccessError("Exact target editor did not acquire keyboard focus")
             audit["keyboard"] = True
             editor.SendKeys(text, charMode=True, waitTime=0.3)
-        if value.Value != text:
+        if not same_text(value.Value, text):
             raise AccessError("ValuePattern could not set and verify exact message text")
         audit["text_prepared"] = True
         if not wait_for(lambda: button.IsEnabled, timeout=2.0):
@@ -514,7 +564,7 @@ def send_once(db, username, value, button, text, audit, receipt, fingerprint, ti
             audit["draft_cleanup_verified"] = False
             # Do not clear a draft that the user changed during the operation.
             try:
-                if audit.get("text_set_attempted") and value.Value == text:
+                if audit.get("text_set_attempted") and same_text(value.Value, text):
                     value.SetValue("", waitTime=0.2)
                     audit["draft_cleanup_verified"] = value.Value == ""
             except Exception as exc:
@@ -532,7 +582,7 @@ def row_identity(row):
 
 def new_outgoing(rows, baseline, text, started):
     return [row for row in rows if row_identity(row) not in baseline
-            and row.get("type") == "文本" and row.get("content") == text
+            and row.get("type") == "文本" and same_text(row.get("content"), text)
             and row.get("is_outgoing") is True and row.get("create_time", 0) >= started - 2]
 
 
@@ -566,6 +616,9 @@ def main():
                    help="单独获准后允许 UIA 定位点击及必要的正文按键；默认禁用")
     p.add_argument("--additional-chat", action="append", default=[],
                    help="明确获准的额外精确接收人；仅在文件传输助手成功后继续")
+    p.add_argument("--prefer-search", action="store_true", help="非当前会话优先走精确搜索结果激活")
+    p.add_argument("--replace-search", help="仅替换精确等于此值的已知本脚本搜索内容，不清理其他输入")
+    p.add_argument("--resume-prepared", action="store_true", help="仅续发已知未发送且完整匹配同一操作的原草稿")
     p.add_argument("--reconcile-only", action="store_true", help="仅回读确认原不确定操作，不调用控件或发送")
     p.add_argument("--confirm-record", nargs=3, type=int, metavar=("SORT_SEQ", "LOCAL_ID", "CREATE_TIME"))
     p.add_argument("--request-id", help="实际发送必填；同一操作始终使用同一个 ID，禁止换 ID 自动重发")
@@ -574,6 +627,8 @@ def main():
         p.error("--commit requires a non-empty --request-id")
     if args.reconcile_only and (args.commit or args.additional_chat or not args.request_id or not args.confirm_record):
         p.error("--reconcile-only requires --request-id and --confirm-record, without --commit or additional chats")
+    if args.resume_prepared and (not args.commit or args.additional_chat):
+        p.error("--resume-prepared requires one explicit committed operation")
     audit = {"experimental": True, "backend": "uia_value_and_invoke_patterns",
              "screenshots": False, "coordinates": False, "keyboard": False,
              "dll_injection": False, "temporary_accessibility_change": False,
@@ -619,12 +674,17 @@ def main():
                         if saved.get("fingerprint") == fingerprint and saved.get("phase") == "local_outgoing_confirmed":
                             matches = [row for row in db.get_messages(target["username"], 100)
                                        if list(row_identity(row)) == saved.get("record")
-                                       and row.get("content") == args.text and row.get("is_outgoing") is True]
+                                       and same_text(row.get("content"), args.text) and row.get("is_outgoing") is True]
                             if len(matches) == 1 and not freshness(db)["wal_merge_failed"]:
                                 operation["previously_confirmed"] = True
                                 operation["local_outgoing_confirmed"] = True
                         if not operation["local_outgoing_confirmed"]:
-                            check_receipt(receipt, fingerprint)
+                            if args.resume_prepared and saved.get("fingerprint") == fingerprint and saved.get("phase") == "failed_before_send":
+                                operation["resume_prepared_authorized"] = True
+                            else:
+                                check_receipt(receipt, fingerprint)
+                    elif args.resume_prepared:
+                        raise AccessError("Prepared-text resume requires its original failed-before-send receipt")
                 operations.append((target, who, operation, receipt, fingerprint))
             audit["operations"] = [entry[2] for entry in operations]
             audit["control_input_authorized"] = args.allow_control_input
@@ -635,12 +695,16 @@ def main():
                     if operation["local_outgoing_confirmed"]:
                         continue
                     try:
-                        value, button, editor = control_preflight(args.pid, who, operation, args.allow_control_input)
+                        value, button, editor = control_preflight(args.pid, who, operation, args.allow_control_input,
+                                                                 prefer_search=args.prefer_search,
+                                                                 replace_search=args.replace_search,
+                                                                 expected_draft=args.text if args.resume_prepared else None)
                         operation["preflight_passed"] = True
                         if args.commit:
                             send_once(db, target["username"], value, button, args.text, operation,
                                       receipt, fingerprint, editor=editor,
-                                      allow_control_input=args.allow_control_input)
+                                      allow_control_input=args.allow_control_input,
+                                      resume_prepared=args.resume_prepared)
                     except Exception as exc:
                         operation["error"] = str(exc)
                         operation.setdefault("control_summary", safe_summary(main_window(args.pid)[1]))

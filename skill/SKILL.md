@@ -1,6 +1,6 @@
 ---
 name: wechat-local
-description: 通过本地 Python 脚本读取 Windows 微信联系人、聊天记录和朋友圈缓存，并在明确授权后发送文字。用于微信查询、脚本文字发送和接口诊断；不使用 Computer Use。原生协议发送和朋友圈写入尚未验证。
+description: 通过本地 Python 脚本读取 Windows 微信联系人、聊天记录和朋友圈缓存，并在明确授权后发送文字与 PNG 图片。用于微信查询、脚本消息发送和接口诊断；不使用 Computer Use。原生协议发送和朋友圈写入尚未验证。
 ---
 
 # 微信本地接口
@@ -60,3 +60,15 @@ description: 通过本地 Python 脚本读取 Windows 微信联系人、聊天�
 ```powershell
 & <runtime.python> <runtime.source_root>/scripts/try_control_send.py --pid <main-pid> --runtime <skill-dir>/runtime.json --chat <exact-identifier> --text <confirmed-text> --request-id <confirmed-operation-id> --allow-temporary-accessibility --allow-control-input --commit
 ```
+
+多行文本的 CRLF/CR 与 LF 按换行等价校验，不放松正文匹配。`--resume-prepared` 只续发同一指纹、已知未发送且当前完整匹配的原草稿；不能续发不确定发送。`--replace-search` 仅用于精确匹配本脚本之前留下的查询，不能用于清理未知用户输入。
+
+## 用户明确授权的图片发送
+
+PNG 已通过独立 `scripts/try_control_send_media.py` 的 Windows 文件选择框路线实测发送和回读。该路线不使用截图、剪贴板、键盘或 Computer Use，也不是微信原生协议。JPEG 为代码支持但尚未单独实测，不扩大兼容性声明。
+
+```powershell
+& <runtime.python> <runtime.source_root>/scripts/try_control_send_media.py --pid <main-pid> --runtime <skill-dir>/runtime.json --chat <exact-identifier> --file <approved-image.png> --request-id <confirmed-operation-id> --allow-temporary-accessibility --allow-control-input --commit
+```
+
+按图片单独保存源 SHA-256 与操作回执，校验精确文件路径后才操作发送，并要求唯一新增出站图片记录。只在确认未开始粘贴、打开文件或发送的失败阶段允许同一操作继续；之后不确定不能重试。默认文件选择框路线已验证，剪贴板替代路线尚未实测成功，不能擅自切换或覆盖未知剪贴板格式。私人分析输入、报告和图片留在受保护的状态目录，不上传到 GitHub。

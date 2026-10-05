@@ -20,6 +20,7 @@ def capabilities():
                            "history": "implemented", "moments": "implemented",
                            "send_text": "native_profile_unresolved",
                            "send_text_uia_script": "verified_opt_in_profile",
+                           "send_image_uia_script": "verified_opt_in_file_dialog_profile",
                            "moment_publish": "native_profile_unresolved",
                            "moment_like": "native_profile_unresolved",
                            "moment_comment": "native_profile_unresolved"},
@@ -31,7 +32,15 @@ def capabilities():
                 "requires_explicit_authorization": ["recipient_and_text", "temporary_accessibility", "control_input"],
                 "verified_route": "uia_located_mouse_click_and_value_pattern",
                 "keyboard_fallback": "unit_tested_not_live_verified",
-                "confirmation": "unique_new_outgoing_record_via_message_shard_Name2Id"}}
+                "confirmation": "unique_new_outgoing_record_via_message_shard_Name2Id"},
+            "experimental_image_send": {
+                "script": "scripts/try_control_send_media.py", "default_enabled": False,
+                "verified_route": "uia_file_dialog_and_control_click",
+                "verified_client_version": "4.1.15.13", "formats": ["png", "jpeg"],
+                "live_verified_formats": ["png"],
+                "native_interface": False, "screenshots": False,
+                "clipboard_route": "unverified; unsupported handle formats refused_without_mutation",
+                "confirmation": "exact_selected_file_path_and_unique_new_outgoing_image_record"}}
 
 
 def bounded(value):
