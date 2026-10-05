@@ -90,3 +90,24 @@ python -X utf8 scripts/probe_runtime_labels.py --pid <confirmed-Weixin-main-PID>
 - `finally` 恢复标志为 0；独立只读检查确认原值恢复且主进程仍在。恢复之后，新的 UIA 枚举再次只显示窗口空壳。
 - 原型现在增加了会话第一行的精确匹配、搜索控件接口和歧义拒绝。新增测试覆盖同名歧义、其他区域正文不可冒充会话、新出站记录必须精确匹配等条件。
 - 17 项离线测试通过，不能据此声明控件发送已验证。需要新的有限轮次授权后，才可以再次临时改变标志并进行真实发送测试。
+
+## 2026-10-05：接手诊断与控件实验的防重复保护
+
+- 从原会话和当前源代码核对：中文公开文档与本机 skill 已更新，但原生发送、控件发送和朋友圈写入均没有完成端到端验证。原试验的失败证据保留。
+- 当前仍运行微信 4.1.15.13。未带临时标志授权或 `--commit` 的基线预检确认标志为 0，因可访问性控件不可用而拒绝继续；`temporary_accessibility_change=false`、`send_invoked=false`。没有修改进程、准备正文或发送消息，不算新的临时标志试验。
+- 修正导航预检：目标聊天已经打开时不再先切走；导航调用后必须轮询观察预期控件。仅导航在确认无效果后可尝试另一个 provider，发送绝不因此重试。
+- 增加实际发送的必填 `--request-id` 与本机受保护的持久化回执。正文准备前保留操作 ID；重复执行和将同一 ID 用于不同正文/目标均拒绝。回执只保存哈希、阶段、时间和确认记录身份，不保存账号、接收人或正文的明文。
+- 修正发送回读：发送接口返回失败或抛出异常后仍只回读、不重发；仅唯一新增且正文和出站方向精确匹配、WAL 合并没有失败的记录可确认。发送前的失败仅清理仍等于脚本正文的草稿，保留用户已有或后来修改的草稿；发送后不确定时不清理、不重发。
+- 诊断摘要不再输出原始 AutomationId 中可能存在的账号标识，只输出已知锚点及接口类型。默认读取能力和 fail-closed 原生 `send --commit` 未改变。
+- 30 项本地离线/状态保护测试通过，覆盖导航空操作、发送返回异常但回读成功、不确定发送、防重复、旧草稿保护、清理失败和陈旧快照。模拟测试不能证明真实控件发送已经打通。
+- 已安装 skill 的 `doctor` 再次通过：九个选定数据库的密钥有效，联系人、会话和朋友圈完整性检查通过，未报告 WAL 合并失败。源码语法检查和 skill 校验通过。项目环境未安装 `build` 模块，因此 `python -m build` 失败；未改变现有环境，改用 `uv build` 的隔离构建后源码包和 wheel 成功生成，旧产物保留。
+- 后续新的临时标志及发送试验仍需要新的有限轮次确认；存在歧义的接收人未得到确认前不发送。此阶段没有对外发送。
+
+### 基线复现与新增测试
+
+```powershell
+python -X utf8 scripts/try_control_send.py --pid <confirmed-Weixin-main-PID> --runtime <local-runtime-json>
+python -X utf8 -m unittest discover -s tests -v
+```
+
+首条命令不带 `--commit` 或 `--allow-temporary-accessibility`。后续获准的实际发送必须额外传入 `--request-id <confirmed-operation-id>`；同一操作复核时不能更换该 ID 绕过已有回执。UIA 方法的成功返回仅证明接口调用层结果，参见 Microsoft [Invoke](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationinvokepattern-invoke) 和 [SetValue](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationvaluepattern-setvalue) 文档，业务层发送仍以新增记录确认。

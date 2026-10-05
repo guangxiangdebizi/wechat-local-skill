@@ -127,9 +127,14 @@ py -3.12 -m venv .venv
 
 - 无截图、坐标、键盘输入或 DLL 注入；只尝试 `ValuePattern`、`InvokePattern`、选择和默认动作接口。
 - `--commit` 才允许尝试发送；需要先明确确认接收人和完整内容。
+- 实际发送还必须指定 `--request-id <confirmed-operation-id>`。同一操作始终使用相同 ID；持久化回执保存在本机受保护的状态目录，不包含接收人或消息明文。正文准备前即保留该 ID，已有回执时拒绝再次操作，不能通过换 ID 自动重发。
 - `--allow-temporary-accessibility` 是另一个单独授权项：仅对已固定 DLL 哈希的一字节可访问性标志临时修改，并在结束时恢复。不修改 Windows 读屏设置。
 - 预检、控件定位、填入正文、调用发送和出站回读分开记录；任一步失败，都不能称为发送成功。结果不确定时不自动重发。
+- 导航必须观察到预期控件状态，接口返回成功但界面没有变化不算成功。发送只调用一次；即使接口返回失败或抛出异常，也继续回读确认，不能据此自动再发。
+- 出站确认要求新增、精确正文、当前账号方向的唯一记录且 WAL 快照没有合并失败。发送前失败时仅尝试清理脚本自己填写且未被用户修改的正文；发送后的不确定草稿保持原样。
 - 首次临时标志试验已成功恢复原值，微信保持运行，但没有找到可操作的目标会话项，因此没有发送消息。后续试验需要另行明确授权。
+
+接口返回值的意义参考 Microsoft 的 [Invoke](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationinvokepattern-invoke) 和 [SetValue](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationvaluepattern-setvalue) 文档。它们不提供微信业务层的投递确认。
 
 ## 文档与开源协议
 
