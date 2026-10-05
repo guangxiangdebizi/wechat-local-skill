@@ -33,14 +33,14 @@ def main():
     runtime = {"python": sys.executable, "package": "wechat_local", "account": args.account,
                "db_dir": args.db_dir, "source_root": str(root), "git_commit": revision,
                "repository": "https://github.com/guangxiangdebizi/wechat-local-skill",
-               "release_boundary": "experimental_read_only"}
+               "release_boundary": "default_read_only_opt_in_uia_text_send"}
     target.mkdir(parents=True, exist_ok=True)
     (target / "scripts").mkdir(exist_ok=True)
     shutil.copy2(source / "SKILL.md", target / "SKILL.md")
     shutil.copy2(source / "scripts" / "wechat.py", target / "scripts" / "wechat.py")
     (target / "runtime.json").write_text(json.dumps(runtime, indent=2), encoding="utf-8")
     print(json.dumps({"installed": True, "skill": "wechat-local", "path": str(target),
-                      "release_boundary": "experimental_read_only"}))
+                      "release_boundary": "default_read_only_opt_in_uia_text_send"}))
 
 
 if __name__ == "__main__":

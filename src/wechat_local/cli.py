@@ -19,10 +19,19 @@ def capabilities():
                            "contacts": "implemented", "sessions": "implemented",
                            "history": "implemented", "moments": "implemented",
                            "send_text": "native_profile_unresolved",
+                           "send_text_uia_script": "verified_opt_in_profile",
                            "moment_publish": "native_profile_unresolved",
                            "moment_like": "native_profile_unresolved",
                            "moment_comment": "native_profile_unresolved"},
-            "data_scope": "locally_cached_data_only; not all server-side history"}
+            "data_scope": "locally_cached_data_only; not all server-side history",
+            "experimental_control_send": {
+                "script": "scripts/try_control_send.py", "default_enabled": False,
+                "verified_client_version": "4.1.15.13", "native_interface": False,
+                "profile_sha256": "10f8e995453e2da46d4f2b5080cd6da1f13cc5147746adc119ceae38cb039de5",
+                "requires_explicit_authorization": ["recipient_and_text", "temporary_accessibility", "control_input"],
+                "verified_route": "uia_located_mouse_click_and_value_pattern",
+                "keyboard_fallback": "unit_tested_not_live_verified",
+                "confirmation": "unique_new_outgoing_record_via_message_shard_Name2Id"}}
 
 
 def bounded(value):

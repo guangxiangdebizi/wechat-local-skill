@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from wechat_local.cli import execute, parser
-from wechat_local.core import (AccessError, contacts, exact_candidate, freshness,
+from wechat_local.core import (AccessError, annotate_sender_rows, contacts, exact_candidate, freshness,
                                parse_moment, public_message, resolve_chat, select_account)
 
 
@@ -26,6 +26,31 @@ class FakeDB:
 
 
 class CoreTests(unittest.TestCase):
+    def test_sender_direction_uses_current_shard_mapping_not_reserved_id(self):
+        with sqlite3.connect(":memory:") as conn:
+            conn.execute("CREATE TABLE Name2Id(user_name TEXT, is_session INTEGER)")
+            conn.executemany("INSERT INTO Name2Id(user_name) VALUES (?)", [("self",), ("peer",)])
+            rows = annotate_sender_rows(conn, [{"real_sender_id": 1}, {"real_sender_id": 2}], "self", "shard-a")
+        self.assertTrue(rows[0]["_is_outgoing"])
+        self.assertFalse(rows[1]["_is_outgoing"])
+        self.assertEqual(rows[1]["_sender_username"], "peer")
+
+    def test_same_sender_id_can_mean_different_accounts_in_different_shards(self):
+        with sqlite3.connect(":memory:") as first, sqlite3.connect(":memory:") as second:
+            for conn, username in ((first, "self"), (second, "peer")):
+                conn.execute("CREATE TABLE Name2Id(user_name TEXT)")
+                conn.execute("INSERT INTO Name2Id VALUES (?)", (username,))
+            one = annotate_sender_rows(first, [{"real_sender_id": 1}], "self", "first")[0]
+            two = annotate_sender_rows(second, [{"real_sender_id": 1}], "self", "second")[0]
+        self.assertTrue(one["_is_outgoing"])
+        self.assertFalse(two["_is_outgoing"])
+
+    def test_missing_sender_mapping_leaves_direction_unknown(self):
+        with sqlite3.connect(":memory:") as conn:
+            row = annotate_sender_rows(conn, [{"real_sender_id": 2}], "self", "fixture")[0]
+        self.assertIsNone(row["_is_outgoing"])
+        self.assertEqual(row["_sender_mapping"], "unresolved")
+
     def test_multiple_accounts_require_selection(self):
         accounts = [{"account": "a"}, {"account": "b"}]
         with self.assertRaises(AccessError):

@@ -1,4 +1,4 @@
-"""经明确授权的 UIA 控件发送实验；无截图、坐标、键盘或 DLL 注入。"""
+"""经明确授权的 UIA 控件发送实验；控件点击/按键需要独立开关。"""
 from __future__ import annotations
 
 import argparse
@@ -17,7 +17,15 @@ PROFILE_HASH = "10f8e995453e2da46d4f2b5080cd6da1f13cc5147746adc119ceae38cb039de5
 GATE_RVA = 0x0B135C38
 
 
+class AmbiguousControlResults(AccessError):
+    pass
+
+
 def walk(control, depth=0):
+    if isinstance(control, (list, tuple)):
+        for root in control:
+            yield from walk(root, depth)
+        return
     yield control
     if depth < 40:
         for child in control.GetChildren():
@@ -69,42 +77,160 @@ def wait_for(observe, timeout=3.0):
         time.sleep(0.2)
 
 
-def navigate(control, observe, label, timeout=3.0):
+def click_control(control, audit):
+    import win32gui
+    import win32process
+
+    if control.IsOffscreen or not control.IsEnabled:
+        raise AccessError("Target control is not visible and enabled")
+    rect = control.BoundingRectangle
+    if rect.right <= rect.left or rect.bottom <= rect.top:
+        raise AccessError("Target control has an empty rectangle")
+    point = ((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2)
+    hwnd = win32gui.WindowFromPoint(point)
+    if not hwnd or win32process.GetWindowThreadProcessId(hwnd)[1] != control.ProcessId:
+        raise AccessError("Target control is occluded by another process; no click allowed")
+    audit["coordinates"] = True
+    audit["coordinate_source"] = "uia_bounding_rectangle"
+    audit["mouse"] = True
+    control.Click(simulateMove=False, waitTime=0.3)
+
+
+def navigate(control, observe, label, timeout=3.0, audit=None, allow_control_input=False):
     import uiautomation as auto
 
+    if allow_control_input:
+        if audit is None:
+            raise AccessError("Control input requires an operation audit")
+        click_control(control, audit)
+        result = wait_for(observe, timeout)
+        audit.setdefault("navigation_actions", []).append(
+            {"provider": "uia_located_mouse", "method": "Click", "effect_verified": bool(result)})
+        if result:
+            return result
+        raise AccessError(label + ": control click did not produce the required UI state")
+    if hasattr(control, "SetFocus"):
+        try:
+            control.SetFocus()
+        except Exception:
+            pass
     # Only navigation may try another provider after a verified no-op.
     for kind, method in (("SelectionItemPattern", "Select"),
                          ("InvokePattern", "Invoke"),
-                         ("LegacyIAccessiblePattern", "DoDefaultAction")):
+                         ("LegacyIAccessiblePattern", "DoDefaultAction"),
+                         ("LegacyIAccessiblePattern", "Select")):
         provider = control.GetPattern(getattr(auto.PatternId, kind))
         if provider is None or (method == "DoDefaultAction" and not provider.DefaultAction):
             continue
-        getattr(provider, method)(waitTime=0.2)
+        action = {"provider": kind, "method": method, "effect_verified": False}
+        try:
+            if kind == "LegacyIAccessiblePattern" and method == "Select":
+                provider.Select(auto.AccessibleSelection.TakeFocus | auto.AccessibleSelection.TakeSelection,
+                                waitTime=0.2)
+            else:
+                getattr(provider, method)(waitTime=0.2)
+        except Exception as exc:
+            action["error_type"] = type(exc).__name__
         result = wait_for(observe, timeout)
+        action["effect_verified"] = bool(result)
+        if audit is not None:
+            audit.setdefault("navigation_actions", []).append(action)
         if result:
             return result
     raise AccessError(label + ": no provider produced the required UI state; no input fallback")
 
 
 def exact_item(root, who, list_token):
-    containers = [control for control in walk(root) if aid_hit(control, list_token)]
+    containers = [control for control in walk(root)
+                  if (control.AutomationId or "").split(".")[-1] == list_token]
     hits = []
+    identities = set()
     for container in containers:
         for item in container.GetChildren():
-            if normalized_name(item) == who:
+            if normalized_name(item) != who or getattr(item, "IsOffscreen", False):
+                continue
+            identity = tuple(item.GetRuntimeId()) if hasattr(item, "GetRuntimeId") else (id(item),)
+            if identity not in identities:
+                identities.add(identity)
                 hits.append(item)
     if len(hits) == 1:
         return hits[0]
     if len(hits) > 1:
-        raise AccessError("Multiple exact session/search results; refusing selection")
+        error = AmbiguousControlResults("Multiple distinct visible exact session/search results; refusing selection")
+        error.candidates = [{"type": item.ControlTypeName, "class": item.ClassName,
+                             "aid_hash": hashlib.sha256((item.AutomationId or "").encode()).hexdigest()[:16],
+                             "runtime_hash": hashlib.sha256(str(
+                                 item.GetRuntimeId() if hasattr(item, "GetRuntimeId") else id(item)
+                             ).encode()).hexdigest()[:16]} for item in hits]
+        raise error
     return None
+
+
+def exact_search_item(root, who, audit):
+    recent = {"最常使用", "最近使用"}
+    sections = recent | {"联系人", "群聊", "公众号", "聊天记录", "功能"}
+    rows, identities = [], set()
+    for container in walk(root):
+        if (container.AutomationId or "").split(".")[-1] != "search_list":
+            continue
+        section = None
+        for item in container.GetChildren():
+            aid = item.AutomationId or ""
+            name = normalized_name(item)
+            if not aid and name in sections:
+                section = name
+                continue
+            if not aid.split(".")[-1].startswith("search_item_"):
+                continue
+            if name != who or getattr(item, "IsOffscreen", False):
+                continue
+            identity = tuple(item.GetRuntimeId()) if hasattr(item, "GetRuntimeId") else (id(item),)
+            if identity not in identities:
+                identities.add(identity)
+                rows.append({"control": item, "aid": aid, "section": section})
+    audit["search_candidates"] = [
+        {"type": row["control"].ControlTypeName, "class": row["control"].ClassName,
+         "section": row["section"], "aid_hash": hashlib.sha256(row["aid"].encode()).hexdigest()[:16]}
+        for row in rows]
+    # A frequent/recent copy can be removed only when its same non-empty result ID is present.
+    primary_ids = {row["aid"] for row in rows if row["section"] not in recent}
+    pruned = [row for row in rows if not (row["section"] in recent and row["aid"] in primary_ids)]
+    audit["search_candidate_count_after_pruning"] = len(pruned)
+    if len(pruned) > 1:
+        raise AmbiguousControlResults("Multiple logical exact search results; refusing selection")
+    return pruned[0]["control"] if len(pruned) == 1 else None
+
+
+def client_roots(pid, main_hwnd):
+    import uiautomation as auto
+    import win32gui
+    import win32process
+
+    handles = [main_hwnd]
+
+    def collect(hwnd, unused):
+        if hwnd != main_hwnd and win32gui.IsWindowVisible(hwnd):
+            if win32process.GetWindowThreadProcessId(hwnd)[1] == pid:
+                handles.append(hwnd)
+
+    win32gui.EnumWindows(collect, None)
+    return [auto.ControlFromHandle(hwnd) for hwnd in handles]
+
+
+def target_input(control, who):
+    return ((control.AutomationId or "").split(".")[-1] == "chat_input_field"
+            and control.ControlTypeName == "EditControl" and control.Name == who)
 
 
 def safe_summary(root):
     import uiautomation as auto
 
     rows = []
-    for control in walk(root):
+    controls = list(walk(root))
+    controls.sort(key=lambda control: (normalized_name(control) != "文件传输助手",
+                  not any(aid_hit(control, token) for token in
+                          ("session_list", "search_list", "chat_input_field", "chat_message_list"))))
+    for control in controls:
         if len(rows) == 70:
             break
         name = control.Name or ""
@@ -116,6 +242,8 @@ def safe_summary(root):
                      if control.GetPattern(getattr(auto.PatternId, kind)) is not None]
         rows.append({"type": control.ControlTypeName, "class": control.ClassName,
                      "anchors": anchors, "patterns": providers,
+                     "terminal_anchor": tokens[-1] in anchors,
+                     "offscreen": bool(getattr(control, "IsOffscreen", False)),
                      "label": name if name in ("微信", "搜索", "发送", "发送(S)", "文件传输助手") else "<redacted>",
                      "filehelper_first_line": normalized_name(control) == "文件传输助手"})
     return rows
@@ -208,10 +336,21 @@ def accessibility_gate(pid, allowed, audit):
             handle.Close()
 
 
-def control_preflight(pid, who, audit):
+def control_preflight(pid, who, audit, allow_control_input=False):
     import uiautomation as auto
 
+    audit["stage"] = "window_controls"
     hwnd, root = main_window(pid)
+    if allow_control_input:
+        import win32gui
+        import win32process
+
+        foreground = win32gui.GetForegroundWindow()
+        if not foreground or win32process.GetWindowThreadProcessId(foreground)[1] != pid:
+            try:
+                win32gui.SetForegroundWindow(hwnd)
+            except Exception:
+                root.SetFocus()
     if not any((control.ClassName or "").startswith("mmui::") for control in walk(root)):
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
@@ -226,16 +365,25 @@ def control_preflight(pid, who, audit):
         return current if predicate(current) else None
 
     input_matches = [control for control in walk(root)
-                     if aid_hit(control, "chat_input_field") and control.Name == who]
+                     if target_input(control, who)]
     if not input_matches:
         tabs = [control for control in walk(root)
                 if control.Name == "微信" and "XTabBarItem" in (control.ClassName or "")]
         has_sessions = any(aid_hit(control, "session_list") for control in walk(root))
         if len(tabs) == 1 and not has_sessions:
             root = navigate(tabs[0], lambda: refreshed(
-                lambda current: any(aid_hit(c, "session_list") for c in walk(current))), "Chat tab")
-        selected = exact_item(root, who, "session_list")
+                lambda current: any(aid_hit(c, "session_list") for c in walk(current))), "Chat tab",
+                audit=audit, allow_control_input=allow_control_input)
+        audit["stage"] = "session_lookup"
+        try:
+            selected = exact_item(root, who, "session_list")
+        except AmbiguousControlResults as exc:
+            audit["session_selection_ambiguous"] = True
+            audit["session_candidates"] = exc.candidates
+            # Do not pick an ambiguous session; a separate exact search may resolve it.
+            selected = None
         if selected is None:
+            audit["stage"] = "search_open"
             boxes = [control for control in walk(root)
                      if control.ControlTypeName == "EditControl" and control.Name == "搜索"]
             if not boxes:
@@ -243,33 +391,43 @@ def control_preflight(pid, who, audit):
                                   and control.Name == "搜索", "Search button")
                 root = navigate(search, lambda: refreshed(lambda current: any(
                     c.ControlTypeName == "EditControl" and c.Name == "搜索" for c in walk(current))),
-                    "Search button")
+                    "Search button", audit=audit, allow_control_input=allow_control_input)
                 boxes = [control for control in walk(root)
                          if control.ControlTypeName == "EditControl" and control.Name == "搜索"]
             if len(boxes) != 1:
                 audit["control_summary"] = safe_summary(root)
                 raise AccessError("Search did not expose one editable provider; no coordinate fallback")
             search_value = pattern(boxes[0], "ValuePattern")
-            if search_value.IsReadOnly or search_value.Value:
+            if search_value.IsReadOnly or search_value.Value not in ("", who):
                 raise AccessError("Search has existing input or is read-only; refusing to overwrite")
-            if not search_value.SetValue(who, waitTime=0.8):
-                raise AccessError("Search ValuePattern failed")
-            selected = wait_for(lambda: exact_item(auto.ControlFromHandle(hwnd), who, "search_list"))
+            if not search_value.Value:
+                if not search_value.SetValue(who, waitTime=0.8) or search_value.Value != who:
+                    raise AccessError("Search ValuePattern failed")
+            else:
+                audit["reused_exact_search"] = True
+            audit["stage"] = "search_results"
+            selected = wait_for(lambda: exact_search_item(client_roots(pid, hwnd), who, audit))
             if selected is None:
                 root = auto.ControlFromHandle(hwnd)
                 audit["control_summary"] = safe_summary(root)
                 raise AccessError("No unique exact result from control search")
+        audit["stage"] = "chat_selection"
+        audit["chat_selection_attempted"] = True
         root = navigate(selected, lambda: refreshed(lambda current: any(
-            aid_hit(c, "chat_input_field") and c.Name == who for c in walk(current))), "Exact chat item")
-    editor = find_one(root, lambda control: aid_hit(control, "chat_input_field")
-                      and control.Name == who, "Exact target chat input")
+            target_input(c, who) for c in walk(current))), "Exact chat item", audit=audit,
+            allow_control_input=allow_control_input)
+        audit["target_chat_open_confirmed"] = True
+    audit["stage"] = "chat_input"
+    editor = find_one(root, lambda control: target_input(control, who), "Exact target chat input")
+    audit["target_chat_open_confirmed"] = True
     value = pattern(editor, "ValuePattern")
     if value.IsReadOnly or value.Value:
         raise AccessError("Chat input is read-only or has an existing draft; refusing to overwrite")
     button = find_one(root, lambda control: control.ControlTypeName == "ButtonControl"
                       and control.Name in ("发送", "发送(S)"), "Send button")
-    pattern(button, "InvokePattern")
-    return value, button
+    if not allow_control_input:
+        pattern(button, "InvokePattern")
+    return value, button, editor
 
 
 def save_receipt(path, data):
@@ -294,27 +452,44 @@ def check_receipt(path, fingerprint):
                           + "; inspect the original result, do not automatically resend")
 
 
-def send_once(db, username, value, button, text, audit, receipt, fingerprint, timeout=15.0):
+def send_once(db, username, value, button, text, audit, receipt, fingerprint, timeout=15.0,
+              editor=None, allow_control_input=False):
     before = {row_identity(row) for row in db.get_messages(username, 100)}
     if freshness(db)["wal_merge_failed"]:
         raise AccessError("Baseline snapshot is stale; no message will be prepared")
     started = int(time.time())
-    data = {"fingerprint": fingerprint, "phase": "preparing", "started": started}
+    data = {"fingerprint": fingerprint, "phase": "preparing", "started": started,
+            "baseline": [list(identity) for identity in before]}
     save_receipt(receipt, data)
     try:
         if value.IsReadOnly or value.Value:
             raise AccessError("Chat input changed after preflight; refusing to overwrite")
         audit["text_set_attempted"] = True
-        if not value.SetValue(text, waitTime=0.2) or value.Value != text:
+        try:
+            audit["text_set_reported_success"] = bool(value.SetValue(text, waitTime=0.2))
+        except Exception as exc:
+            audit["text_set_error_type"] = type(exc).__name__
+        if value.Value != text and allow_control_input and editor is not None and value.Value == "":
+            click_control(editor, audit)
+            if not editor.HasKeyboardFocus:
+                raise AccessError("Exact target editor did not acquire keyboard focus")
+            audit["keyboard"] = True
+            editor.SendKeys(text, charMode=True, waitTime=0.3)
+        if value.Value != text:
             raise AccessError("ValuePattern could not set and verify exact message text")
         audit["text_prepared"] = True
-        if not button.IsEnabled:
+        if not wait_for(lambda: button.IsEnabled, timeout=2.0):
             raise AccessError("Send button remains disabled after verified text entry")
         data["phase"] = "send_invocation_started"
         save_receipt(receipt, data)
         audit["send_invoked"] = True
         try:
-            audit["invoke_reported_success"] = bool(invoke(button))
+            if allow_control_input:
+                audit["send_action"] = "uia_located_control_click"
+                click_control(button, audit)
+            else:
+                audit["send_action"] = "invoke_pattern"
+                audit["invoke_reported_success"] = bool(invoke(button))
         except Exception as exc:
             audit["invoke_error_type"] = type(exc).__name__
         deadline = time.monotonic() + timeout
@@ -352,27 +527,53 @@ def send_once(db, username, value, button, text, audit, receipt, fingerprint, ti
 
 
 def row_identity(row):
-    return row.get("sort_seq"), row.get("local_id"), row.get("create_time")
+    return row.get("sort_seq"), row.get("local_id"), row.get("create_time"), row.get("shard")
 
 
 def new_outgoing(rows, baseline, text, started):
     return [row for row in rows if row_identity(row) not in baseline
             and row.get("type") == "文本" and row.get("content") == text
-            and row.get("sender_id") == 2 and row.get("create_time", 0) >= started - 2]
+            and row.get("is_outgoing") is True and row.get("create_time", 0) >= started - 2]
+
+
+def reconcile_receipt(db, username, text, path, fingerprint, confirmed_record):
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    if saved.get("fingerprint") != fingerprint or saved.get("phase") != "send_result_uncertain":
+        raise AccessError("Only the same uncertain operation can be reconciled")
+    rows = db.get_messages(username, 100)
+    if freshness(db)["wal_merge_failed"]:
+        raise AccessError("Cannot reconcile from a stale snapshot")
+    baseline = {tuple(identity) for identity in saved.get("baseline", [])}
+    hits = new_outgoing(rows, baseline, text, saved["started"])
+    hits = [row for row in hits if (row["sort_seq"], row["local_id"], row["create_time"]) == tuple(confirmed_record)
+            and row["create_time"] >= saved["started"]]
+    if len(hits) != 1:
+        raise AccessError("Specified record is not a unique exact outgoing confirmation")
+    saved.update({"phase": "local_outgoing_confirmed", "record": list(row_identity(hits[0])),
+                  "reconciled_from": "send_result_uncertain", "sender_mapping": hits[0].get("sender_mapping")})
+    save_receipt(path, saved)
 
 
 def main():
-    p = argparse.ArgumentParser(description="纯 UIA 控件发送实验；不使用 Computer Use、截图或坐标")
+    p = argparse.ArgumentParser(description="纯 Python UIA 控件发送实验；不使用 Computer Use 或截图")
     p.add_argument("--pid", type=int, required=True)
     p.add_argument("--runtime", type=Path, required=True)
     p.add_argument("--chat", default="filehelper")
     p.add_argument("--text", default="Codex 微信接口测试")
     p.add_argument("--allow-temporary-accessibility", action="store_true")
     p.add_argument("--commit", action="store_true")
+    p.add_argument("--allow-control-input", action="store_true",
+                   help="单独获准后允许 UIA 定位点击及必要的正文按键；默认禁用")
+    p.add_argument("--additional-chat", action="append", default=[],
+                   help="明确获准的额外精确接收人；仅在文件传输助手成功后继续")
+    p.add_argument("--reconcile-only", action="store_true", help="仅回读确认原不确定操作，不调用控件或发送")
+    p.add_argument("--confirm-record", nargs=3, type=int, metavar=("SORT_SEQ", "LOCAL_ID", "CREATE_TIME"))
     p.add_argument("--request-id", help="实际发送必填；同一操作始终使用同一个 ID，禁止换 ID 自动重发")
     args = p.parse_args()
     if args.commit and (not args.request_id or not args.request_id.strip()):
         p.error("--commit requires a non-empty --request-id")
+    if args.reconcile_only and (args.commit or args.additional_chat or not args.request_id or not args.confirm_record):
+        p.error("--reconcile-only requires --request-id and --confirm-record, without --commit or additional chats")
     audit = {"experimental": True, "backend": "uia_value_and_invoke_patterns",
              "screenshots": False, "coordinates": False, "keyboard": False,
              "dll_injection": False, "temporary_accessibility_change": False,
@@ -383,30 +584,78 @@ def main():
             raise AccessError("Control experiments require an explicitly bound runtime account")
         with state_lock():
             db = open_db(config.get("db_dir"), config.get("account"))
-            target = resolve_chat(db, args.chat)
-            who = target.get("remark") or target.get("nick_name") or target["username"]
-            if target["username"] != "filehelper":
-                same = resolve_chat(db, who)
-                if same["username"] != target["username"]:
-                    raise AccessError("Display name does not resolve to the requested exact account")
-            if args.commit:
-                receipt = receipt_path(config["account"], args.request_id)
+            targets = [resolve_chat(db, query) for query in [args.chat, *args.additional_chat]]
+            if args.additional_chat and (not args.commit or targets[0]["username"] != "filehelper"):
+                raise AccessError("Additional recipients require a committed filehelper-first operation")
+            if len({target["username"] for target in targets}) != len(targets):
+                raise AccessError("Repeated recipient in the same operation")
+            if args.reconcile_only:
+                target = targets[0]
+                path = receipt_path(config["account"], args.request_id)
                 fingerprint = hashlib.sha256(json.dumps(
                     [config["account"], target["username"], args.text]).encode()).hexdigest()
-                check_receipt(receipt, fingerprint)
-            with accessibility_gate(args.pid, args.allow_temporary_accessibility, audit):
-                try:
-                    value, button = control_preflight(args.pid, who, audit)
-                except Exception:
-                    import uiautomation as auto
-                    audit.setdefault("control_summary", safe_summary(main_window(args.pid)[1]))
-                    raise
-                audit["preflight_passed"] = True
+                reconcile_receipt(db, target["username"], args.text, path, fingerprint, args.confirm_record)
+                print(json.dumps({"experimental": True, "backend": "local_wcdb_receipt_reconciliation",
+                                  "send_invoked": False, "local_outgoing_confirmed": True,
+                                  "process_memory_writes": False}))
+                return 0
+            operations = []
+            for index, target in enumerate(targets):
+                who = target.get("remark") or target.get("nick_name") or target["username"]
+                if target["username"] != "filehelper":
+                    if resolve_chat(db, who)["username"] != target["username"]:
+                        raise AccessError("Display name does not resolve to the requested exact account")
+                operation = {"operation_index": index, "coordinates": False, "keyboard": False,
+                             "send_invoked": False, "local_outgoing_confirmed": False}
+                receipt = fingerprint = None
                 if args.commit:
-                    send_once(db, target["username"], value, button, args.text, audit,
-                              receipt, fingerprint)
+                    request_id = args.request_id if index == 0 else args.request_id + ":" + hashlib.sha256(
+                        target["username"].encode()).hexdigest()
+                    receipt = receipt_path(config["account"], request_id)
+                    fingerprint = hashlib.sha256(json.dumps(
+                        [config["account"], target["username"], args.text]).encode()).hexdigest()
+                    if receipt.exists():
+                        saved = json.loads(receipt.read_text(encoding="utf-8"))
+                        if saved.get("fingerprint") == fingerprint and saved.get("phase") == "local_outgoing_confirmed":
+                            matches = [row for row in db.get_messages(target["username"], 100)
+                                       if list(row_identity(row)) == saved.get("record")
+                                       and row.get("content") == args.text and row.get("is_outgoing") is True]
+                            if len(matches) == 1 and not freshness(db)["wal_merge_failed"]:
+                                operation["previously_confirmed"] = True
+                                operation["local_outgoing_confirmed"] = True
+                        if not operation["local_outgoing_confirmed"]:
+                            check_receipt(receipt, fingerprint)
+                operations.append((target, who, operation, receipt, fingerprint))
+            audit["operations"] = [entry[2] for entry in operations]
+            audit["control_input_authorized"] = args.allow_control_input
+            if args.allow_control_input:
+                audit["backend"] = "uia_located_control_input_experiment"
+            with accessibility_gate(args.pid, args.allow_temporary_accessibility, audit):
+                for target, who, operation, receipt, fingerprint in operations:
+                    if operation["local_outgoing_confirmed"]:
+                        continue
+                    try:
+                        value, button, editor = control_preflight(args.pid, who, operation, args.allow_control_input)
+                        operation["preflight_passed"] = True
+                        if args.commit:
+                            send_once(db, target["username"], value, button, args.text, operation,
+                                      receipt, fingerprint, editor=editor,
+                                      allow_control_input=args.allow_control_input)
+                    except Exception as exc:
+                        operation["error"] = str(exc)
+                        operation.setdefault("control_summary", safe_summary(main_window(args.pid)[1]))
+                        raise
+                audit["preflight_passed"] = True
     except Exception as exc:
         audit["error"] = str(exc)
+        if hasattr(exc, "candidates"):
+            audit["ambiguous_candidates"] = exc.candidates
+    operations = audit.get("operations", [])
+    audit["send_invoked"] = any(operation.get("send_invoked") for operation in operations)
+    audit["coordinates"] = any(operation.get("coordinates") for operation in operations)
+    audit["keyboard"] = any(operation.get("keyboard") for operation in operations)
+    audit["confirmed_operation_count"] = sum(bool(operation.get("local_outgoing_confirmed")) for operation in operations)
+    audit["local_outgoing_confirmed"] = bool(operations) and audit["confirmed_operation_count"] == len(operations)
     print(json.dumps(audit, ensure_ascii=False))
     return 0 if audit.get("preflight_passed") and "error" not in audit else 2
 

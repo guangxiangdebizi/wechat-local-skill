@@ -111,3 +111,42 @@ python -X utf8 -m unittest discover -s tests -v
 ```
 
 首条命令不带 `--commit` 或 `--allow-temporary-accessibility`。后续获准的实际发送必须额外传入 `--request-id <confirmed-operation-id>`；同一操作复核时不能更换该 ID 绕过已有回执。UIA 方法的成功返回仅证明接口调用层结果，参见 Microsoft [Invoke](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationinvokepattern-invoke) 和 [SetValue](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationvaluepattern-setvalue) 文档，业务层发送仍以新增记录确认。
+
+## 2026-10-05：获准的三轮实际控件预检，发送仍未验证
+
+- 用户重新确认最多三轮临时标志控件试验，先测试文件传输助手。额外接收人的两条输入已澄清为两个独立备注；具体联系人和标识仅留在本机，不写入公开记录。
+- 三轮都固定当前 DLL 哈希和主进程，使用同一个发送 request ID，并带明确的 `--commit` 和临时标志授权。三轮均在精确会话/搜索候选定位阶段被拒绝，没有通过发送预检、准备消息正文或调用发送，不能称为实际发送完成。
+- 第一轮报告 `Multiple exact session/search results; refusing selection`。在后续定位修订中，仅以 AutomationId 的末尾锚点识别列表容器，按 RuntimeId 去除同一物理元素的重复枚举，并排除 offscreen 结果。这是针对候选来源的改进，不是已证实的完整根因修复。
+- 第二、三轮仍报告 `Multiple distinct visible exact session/search results; refusing selection`。第三轮代码将会话列表歧义单独记录并转向精确搜索，但报告没有出现会话歧义标记，仍触发上述拒绝；该分支证据将剩余问题定位到精确搜索候选，不证明多个物理结果属于同一账号。没有盲选第一项或直接按相同显示名合并不同物理结果。
+- 每轮都确认标志由 0 临时改为 1，并在 `finally` 恢复为 0；后续无标志修改的 UIA 枚举再次只暴露三个空壳节点。主进程继续运行且响应，没有重启微信、Frida、截图、坐标或键盘注入。三轮授权额度已使用完，没有追加第四轮。
+- 原始脱敏诊断保存在本机 `.state/control-trial-1.json`、`control-trial-2.json` 和 `control-trial-3.json`，不上传公开仓库。未进入正文准备，因此没有创建实际发送回执。
+- 离线测试新增末尾锚点、相同 RuntimeId 去重、offscreen 拒绝和脱敏歧义诊断覆盖；这类模拟测试不能代替真实发送。后续代码增加阶段及候选哈希诊断，尚未对当前微信追加在线验证。
+
+### 三轮复现参数
+
+```powershell
+python -X utf8 scripts/try_control_send.py --pid <confirmed-main-PID> --runtime <local-runtime-json> --chat filehelper --text <confirmed-test-text> --allow-temporary-accessibility --commit --request-id <same-confirmed-operation-id>
+```
+
+这是历史试验的复现参数，不是自动追加试验的授权。当前公开能力继续标为实验性只读，原生发送和朋友圈写入未改变状态。
+
+## 2026-10-05：实际选中会话、脚本文字发送与方向修正
+
+- 用户指出之前只填入搜索词、没有打开对话。新获准的一轮将搜索结果与分组标题区分，仅接受 `search_item_` 身份锚点，并处理具有同一身份的最近使用副本；独立弹窗只在当前微信进程内查找。该轮成功找到唯一功能结果，但 Qt `SelectionItemPattern.Select` 抛出 COMError，未打开目标聊天、未发送，标志恢复。
+- 用户随后要求必须纯脚本形式，并允许在该工作流继续使用控件定位点击和必要按键。新增 `--allow-control-input` 独立开关；默认路径仍不使用输入。实际点击从 UIA 控件矩形获取位置，拒绝空矩形、不可见/禁用和被其他进程遮挡的控件，不使用 Computer Use、截图、手填坐标或上游 GUI 驱动。
+- 第一轮控件点击路线确实打开文件传输助手，`ValuePattern` 准备了精确正文，并只点击一次发送。原始回读逻辑因硬编码 `sender_id=2` 在 15 秒后误报无法确认；该原始失败输出保存在本机，未改写或删除，没有自动重发。
+- 随后的新进程只读回读找到唯一的新文本记录。原始消息分片的 `Name2Id` 将其 `real_sender_id=1` 映射为绑定账号，而资源库 `SenderName2Id` 的同号记录为空、另一个号是不同账号。两个表的命名空间不能混用，`sender_id=2` 也不能固定当作自己。
+- 保持 vendored 源码不变，在独立子类按每个消息分片的 `Name2Id` 解析 `sender_username` 和 `is_outgoing`，并保留分片身份；缺少映射时方向为未知。合成 SQLite 测试覆盖自己为 ID 1、ID 2 为对方、不同分片相同数字指向不同账号，以及缺失映射，避免把错误的资源映射或数字常量继续用于确认。
+- 使用 `--reconcile-only` 对上述具体记录的正文、时间、记录身份、绑定账号方向及 WAL 快照进行只读补充确认，将原不确定回执更新为已确认；该操作没有 UIA 控件调用、进程内存写入或发送。原轮次仍保留其误报证据。
+- 在剩余获准的一轮中，文件传输助手按原确认记录跳过，另外四个分别唯一核对并获准的目标各发送一次文本。五个目标均获得唯一的本地出站回读确认，未重复发送文件传输助手；额外目标的私人备注、微信号、正文和记录身份不写入公开文档。
+- 两轮实际成功路线均是 **UIA 定位鼠标点击 + ValuePattern 正文写入 + 本地 WCDB 回读**，没有键盘输入。键盘正文回退仅在模拟测试中覆盖，不能声称已在真实客户端验证。全部获准轮次结束都恢复标志为原值 0，主进程保持响应，未重启、DLL 注入、Frida 或修改系统读屏设置。
+- 该结果仅证明固定 Windows x64、Python 3.12、微信 4.1.15.13 与既有 DLL 哈希配置上的脚本文字发送，不证明微信原生协议发送、其他版本、媒体发送或朋友圈写入。普通 `send --commit` 的原生 fail-closed 边界保持不变。
+
+### 成功路线与补充确认的复现形式
+
+```powershell
+python -X utf8 scripts/try_control_send.py --pid <confirmed-main-PID> --runtime <local-runtime-json> --chat <exact-recipient> --text <confirmed-text> --request-id <same-operation-id> --allow-temporary-accessibility --allow-control-input --commit
+python -X utf8 scripts/try_control_send.py --pid <confirmed-main-PID> --runtime <local-runtime-json> --chat <exact-recipient> --text <confirmed-text> --request-id <same-operation-id> --reconcile-only --confirm-record <sort-seq> <local-id> <create-time>
+```
+
+首条必须有对应用户授权；第二条只能对原不确定操作指定的具体记录回读，不重新发送。批量的额外目标通过重复 `--additional-chat <exact-recipient>` 显式传入，第一目标必须为文件传输助手且已确认，不能根据聊天内容新增接收人。

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wechat-local-skill"
-version = "0.1.0"
-description = "面向中文用户的 Windows 微信本地脚本与 Codex skill：联系人、会话、聊天记录、朋友圈缓存读取及原生接口研究"
+version = "0.2.0"
+description = "面向中文用户的 Windows 微信本地脚本与 Codex skill：本地数据读取、显式授权的纯 Python 文本发送及原生接口研究"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE", "licenses/*.txt", "THIRD_PARTY_NOTICES.md"]

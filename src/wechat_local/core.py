@@ -102,6 +102,32 @@ def select_account(accounts: list[dict], account: str | None) -> str:
     return accounts[0]["account"]
 
 
+def annotate_sender_rows(conn, rows, self_username, shard):
+    import sqlite3
+
+    senders = sorted({row["real_sender_id"] for row in rows if row["real_sender_id"] is not None})
+    mapping = {}
+    available = True
+    try:
+        for start in range(0, len(senders), 400):
+            batch = senders[start:start + 400]
+            placeholders = ",".join("?" for _ in batch)
+            mapping.update(conn.execute("SELECT rowid, user_name FROM Name2Id WHERE rowid IN ("
+                                        + placeholders + ")", batch).fetchall())
+    except sqlite3.DatabaseError:
+        available = False
+    result = []
+    for row in rows:
+        item = dict(row)
+        sender = mapping.get(item["real_sender_id"], "") if available else ""
+        item["_sender_username"] = sender
+        item["_is_outgoing"] = sender == self_username if sender else None
+        item["_sender_mapping"] = "message_shard.Name2Id" if sender else "unresolved"
+        item["_shard"] = shard
+        result.append(item)
+    return result
+
+
 def open_db(db_dir: str | None = None, account: str | None = None):
     from .vendor.replica_db import WeChatDB
     import psutil
@@ -157,6 +183,27 @@ def open_db(db_dir: str | None = None, account: str | None = None):
                 raise AccessError("No validated key for database: " + rel)
             return super()._open(rel)
 
+        def _shard_rows(self, tables, sql_ext, params=(), order_ext="", per_shard_limit=None):
+            rows = []
+            for conn, table in tables:
+                shard_rows = super()._shard_rows([(conn, table)], sql_ext, params,
+                                                 order_ext, per_shard_limit)
+                filename = next(row[2] for row in conn.execute("PRAGMA database_list") if row[1] == "main")
+                rows.extend(annotate_sender_rows(conn, shard_rows, self.wxid, Path(filename).name))
+            return rows
+
+        def _msg_row_to_dict(self, row):
+            source = dict(row)
+            sender_id = source["real_sender_id"]
+            # Upstream's resource-wide mapping and reserved sender ID do not apply to this schema.
+            source["real_sender_id"] = 0
+            result = super()._msg_row_to_dict(source)
+            result.update({"sender_id": sender_id, "sender_username": source.get("_sender_username", ""),
+                           "is_outgoing": source.get("_is_outgoing"),
+                           "sender_mapping": source.get("_sender_mapping", "unresolved"),
+                           "shard": source.get("_shard")})
+            return result
+
     return PrivateDB(db_dir=root, account=selected, workdir=str(cache), keys_file=str(cache / "keys.dpapi"))
 
 
@@ -201,7 +248,8 @@ def resolve_chat(db, query: str) -> dict:
 
 
 def public_message(row: dict) -> dict:
-    fields = ("local_id", "sort_seq", "create_time", "type", "sender_id", "sender_username")
+    fields = ("local_id", "sort_seq", "create_time", "type", "sender_id", "sender_username",
+              "is_outgoing", "sender_mapping", "shard")
     result = {key: row.get(key) for key in fields}
     content = row.get("content", "")
     # Media XML can embed usable CDN credentials. Keep raw payloads out of
