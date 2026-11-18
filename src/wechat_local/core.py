@@ -248,6 +248,7 @@ def resolve_chat(db, query: str) -> dict:
 
 
 def public_message(row: dict) -> dict:
+    from .cards import summary
     fields = ("local_id", "sort_seq", "create_time", "type", "sender_id", "sender_username",
               "is_outgoing", "sender_mapping", "shard")
     result = {key: row.get(key) for key in fields}
@@ -258,6 +259,10 @@ def public_message(row: dict) -> dict:
         result["content"] = content
     else:
         result["content"] = "[" + str(row.get("type", "unknown")) + "]"
+        if row.get("type") == "文件/链接/卡片":
+            card = summary(content)
+            if card:
+                result["card"] = card
     return result
 
 

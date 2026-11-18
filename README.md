@@ -4,6 +4,24 @@
 
 > **默认命令仍为只读，独立的纯 Python 控件文字发送已在固定版本实测成功。** `send` 命令仍仅预览；真正发送需显式使用 `scripts/try_control_send.py` 及对应授权开关。控件发送不等于微信原生接口，朋友圈发布、点赞和评论仍未实现。不要把接口返回成功、HTTP 200 或发送预览当作真实发送成功。
 
+## 0.3.0：查交办、查附件、接着上次读
+
+命令示例中的 `wechat-local` 使用已绑定账号的 skill 启动器时可替换为 `python scripts/wechat.py`。直接运行 CLI 时，如有多个账号，在子命令前指定 `--account`。
+
+```powershell
+wechat-local search --chat "示例老师" --query "名单" --sender incoming --since 2026-05-01 --until 2026-06-01 --context 2
+wechat-local changes --chat "示例老师" --checkpoint work --limit 100
+wechat-local changes --chat "示例老师" --checkpoint work --ack "<已处理页的 next_cursor>"
+wechat-local members --chat "示例工作群" --query "示例"
+wechat-local export --chat "示例老师" --since 2026-05-01 --until 2026-06-01 --format markdown --out review.md
+```
+
+- **搜索**：在一个会话内搜索正文、卡片标题和被引用的文本，可筛选本人、对方或精确的发送者标识。时间范围含起点、不含终点；无时区时按本机时间解释。前后文限制在同一会话和时间范围内，不受发送者筛选限制。结果按时间升序，`truncated` 表示还有命中。
+- **文件和群聊**：识别文件标题、链接标题和引用原话；不能识别的消息保留占位符，不返回原始媒体 XML。搜索和增量结果会查本账号对应月份下载目录，`same_name_in_month` 只表示有同名文件，不证明文件内容相同。群消息有成员映射才给显示名，有明确提及名单才判断 `mentions_me`；缺失返回 null。
+- **增量**：首次从本机可见历史开始；只想看今后的消息，首次加 `--start-now` 并确认其游标。先处理本页、再 `--ack`，随后继续读，直到 `has_more=false`。每个账号、会话和检查点独立；也可不用命名检查点，自己保存 `next_cursor` 后用 `--cursor` 续读。下游按 `evidence_id` 幂等处理。游标追踪各分片新增的行，不监听撤回、旧行编辑或服务器未同步的历史；更换或恢复数据库后请重新建立基线。
+- **导出**：只导出指定会话和时间窗，输出 Markdown 或逐行 JSON（JSONL），不覆盖已有文件。默认遮盖常见手机号、长号码和邮箱，不保证匿名；共享前仍要检查人名、地址、业务内容。
+- **兼容性**：`status.current_profile` 报告当前客户端与旧版发送验证的关系；`doctor` 检查当前账号读取链路。此版本未新增发送或朋友圈写入能力。
+
 ## 当前能力
 
 | 功能 | 状态 |

@@ -19,7 +19,15 @@ description: 通过本地 Python 脚本读取 Windows 微信联系人、聊天�
 & <runtime.python> <skill-dir>/scripts/wechat.py moments --limit 20
 ```
 
-## 账号与联系人
+## 交办、附件和增量核对
+
+- 查旧要求用 `search --chat <会话> --query <词> --sender incoming --since YYYY-MM-DD --until YYYY-MM-DD --context 2`。结束日期不含当天；随后核对双方上下文，不把引用里的话当作发送者本人的承诺。
+- 问“上次之后”用 `changes --chat <会话> --checkpoint <用途>`。先把本页证据按 `evidence_id` 去重并保存到用户指定的目的地，再以相同会话、检查点调用 `changes --ack <next_cursor>`；有更多页就继续。首次默认读取可见历史；只有明确要忽略存量时才用 `--start-now`。没有命名检查点时可用 `--cursor` 手动续读。
+- 在规划系统里用已有任务作主记录：同一事项的新消息补到原任务，不能只按消息数建任务。区分老师交办、本人接下、发出文件、对方收件、明确验收；承诺或附件标题不能代替交付证据。
+- 查看 `card.kind/title/quoted_text`；同月有同名文件不等于确认该附件或已收件。群成员用 `members --chat <群> --query <名字>`；`mentions_me=null` 表示没有可判断的提及名单。
+- 需要文件时才用 `export --chat <会话> --since <开始> --until <结束> --out <新文件> --format markdown`（或 jsonl）。导出不是匿名化，不把原始记录附到公开任务单。`status.current_profile` 描述当前版本，不能把历史发送验证当成本机可发送。
+
+## 账号绑定
 
 - 声明能力前先检查 `capabilities` 与 `status`。
 - 保持当前明确绑定的账号。多个账号目录且未绑定时，必须显式指定 `--account`，不能为了让查询成功而换到另一个账号。

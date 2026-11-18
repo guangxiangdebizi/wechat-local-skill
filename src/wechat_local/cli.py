@@ -5,9 +5,12 @@ import contextlib
 import hashlib
 import json
 import os
+import sqlite3
 import sys
+from datetime import datetime
 
 from . import __version__
+from . import review
 from .core import (AccessError, account_list, contacts, database_for, freshness,
                    moments, open_db, public_message, resolve_chat, running_clients, state_lock)
 
@@ -18,6 +21,8 @@ def capabilities():
             "interfaces": {"status": "implemented", "accounts": "implemented",
                            "contacts": "implemented", "sessions": "implemented",
                            "history": "implemented", "moments": "implemented",
+                           "search": "implemented", "changes": "implemented", "members": "implemented",
+                           "export": "implemented",
                            "send_text": "native_profile_unresolved",
                            "send_text_uia_script": "verified_opt_in_profile",
                            "send_image_uia_script": "verified_opt_in_file_dialog_profile",
@@ -57,6 +62,13 @@ def nonnegative(value):
     return n
 
 
+def timestamp(value):
+    try:
+        return int(datetime.fromisoformat(value).timestamp())
+    except (ValueError, OverflowError, OSError) as exc:
+        raise argparse.ArgumentTypeError("Expected ISO date or datetime") from exc
+
+
 def parser():
     p = argparse.ArgumentParser(description="微信本地数据接口：默认只读，不使用 Computer Use")
     p.add_argument("--db-dir")
@@ -73,6 +85,29 @@ def parser():
     h.add_argument("--chat", required=True)
     h.add_argument("--limit", type=bounded, default=20)
     h.add_argument("--offset", type=nonnegative, default=0)
+    for name in ("search", "export", "changes", "members"):
+        cmd = subs.add_parser(name)
+        cmd.add_argument("--chat", required=True)
+        if name in ("search", "export"):
+            for flag in ("--since", "--until"):
+                cmd.add_argument(flag, type=timestamp, required=(name == "export"))
+        if name != "export":
+            cmd.add_argument("--limit", type=bounded, default=50)
+        if name == "search":
+            cmd.add_argument("--query", required=True)
+            cmd.add_argument("--sender", help="me, incoming or exact sender username")
+            cmd.add_argument("--context", type=int, choices=range(6), default=1)
+        if name == "changes":
+            cmd.add_argument("--cursor")
+            cmd.add_argument("--checkpoint")
+            cmd.add_argument("--ack")
+            cmd.add_argument("--start-now", action="store_true")
+        if name == "members":
+            cmd.add_argument("--query", default="")
+            cmd.add_argument("--offset", type=nonnegative, default=0)
+        if name == "export":
+            cmd.add_argument("--format", choices=("jsonl", "markdown"), default="jsonl")
+            cmd.add_argument("--out", required=True)
     m = subs.add_parser("moments")
     m.add_argument("--author", help="精确的内部用户名、微信号、昵称或备注")
     m.add_argument("--limit", type=bounded, default=20)
@@ -90,7 +125,12 @@ def execute(args):
     if os.name != "nt":
         raise AccessError("This runtime requires Windows x64")
     if args.command == "status":
-        return {"processes": running_clients(), "capabilities": capabilities()}
+        clients = running_clients()
+        versions = sorted({p.get("version") for p in clients if p.get("version")})
+        return {"processes": clients, "capabilities": capabilities(),
+                "current_profile": {"client_versions": versions, "read_health": "run_doctor",
+                                    "uia_send": "needs_hash_preflight" if versions == ["4.1.15.13"]
+                                    else "not_verified_for_running_client"}}
     if args.command == "accounts":
         root, accounts = account_list(args.db_dir)
         return {"db_dir": root, "accounts": accounts}
@@ -134,6 +174,32 @@ def execute(args):
             target = resolve_chat(db, args.chat)
             result = {"chat": target, "messages": [public_message(row) for row in
                        db.get_messages(target["username"], args.limit, args.offset)]}
+        elif args.command in ("search", "changes", "members", "export"):
+            target = resolve_chat(db, args.chat)
+            user = target["username"]
+            if args.command == "changes":
+                health = freshness(db)
+                if health["wal_merge_failed"] or db.unkeyed:
+                    raise AccessError("Incomplete snapshot; checkpoint not advanced")
+                result = review.changes(db, user, args)
+                if freshness(db)["wal_merge_failed"]:
+                    raise AccessError("Snapshot refresh incomplete; do not acknowledge this page")
+            elif args.command == "members":
+                if not user.endswith("@chatroom"):
+                    raise AccessError("Expected a group chat")
+                term = args.query.casefold()
+                matched = [m for m in db.get_group_members(user)
+                           if any(term in (m.get(k) or "").casefold() for k in ("username", "nick_name", "remark"))]
+                result = {"members": matched[args.offset:args.offset + args.limit], "total": len(matched)}
+            else:
+                with review.window(db, user, args.since, args.until) as rows:
+                    if args.command == "search":
+                        if not args.query.strip():
+                            raise AccessError("--query must not be blank")
+                        result = review.search(rows, args)
+                    else:
+                        result = review.export(rows, args.out, args.format)
+            result["chat"] = target
         elif args.command == "moments":
             author = resolve_chat(db, args.author)["username"] if args.author else None
             result = {"moments": moments(db, args.limit, args.offset, author)}
@@ -157,7 +223,7 @@ def main(argv=None):
         status = 0
         if isinstance(result.get("read_checks_passed"), bool) and not result["read_checks_passed"]:
             output["ok"], status = False, 2
-    except (AccessError, RuntimeError, OSError) as exc:
+    except (AccessError, RuntimeError, OSError, sqlite3.Error) as exc:
         output = {"ok": False, "error": str(exc)}
         status = 2
     print(json.dumps(output, ensure_ascii=False, default=str))
